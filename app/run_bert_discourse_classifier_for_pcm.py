@@ -1,6 +1,7 @@
 from argparse import ArgumentParser
 import re
 import sys
+from flask import request
 
 import uvicorn
 from fastapi import FastAPI
@@ -13,8 +14,33 @@ from discopy.parsers.pipeline import ParserPipeline
 from discopy_data.nn.bert import get_sentence_embedder
 
 
+import os
+# os.environ["CUDA_VISIBLE_DEVICES"] = "7"
+import logging
+# import sacrebleu
+import pandas as pd
+from simpletransformers.t5 import T5Model, T5Args
+
+
+logging.basicConfig(level=logging.INFO)
+transformers_logger = logging.getLogger("transformers")
+transformers_logger.setLevel(logging.WARNING)
+
+
+model_args = T5Args()
+model_args.max_length = 256
+model_args.n_gpu = 4
+model_args.length_penalty = 1
+model_args.num_beams = 10
+model_args.use_multiprocessed_decoding = False
+# model_output_dir = "/home/mohammed_yahia3/checkpoint-49960-epoch-8"
+model_output_dir="/home/CE/musaeed/checkpoint-185000-epoch-9"
+model = T5Model("t5", model_output_dir, args=model_args, use_cuda=True)
+
+
+
 arg_parser = ArgumentParser()
-arg_parser.add_argument("--hostname", default="0.0.0.0", type=str, help="REST API hostname")
+arg_parser.add_argument("--hostname", default="127.0.0.1", type=str, help="REST API hostname")
 arg_parser.add_argument("--port", default=8081, type=int, help="REST API port")
 arg_parser.add_argument("--model-path", type=str, help="path to trained discourse parser")
 arg_parser.add_argument("--bert-model", default='bert-base-cased', type=str, help="bert model name")
@@ -43,20 +69,8 @@ async def startup_event():
     parser.load(args.model_path)
 
 
-@app.get("/api/parser/config")
-def get_parser_config():
-    configs = []
-    for c in parser.components:
-        configs.append(c.get_config())
-    return configs
-
-
 class ParserRequest(BaseModel):
     text: str
-
-class ParsingModel(BaseModel):
-    title: str
-    details: str
 
 
 def tokenize(text, fast = True, tokenize_only = True):
@@ -93,26 +107,45 @@ def add_parsers(src,
     sys.stderr.write('Supar parsing done!\n')
     return output
 
+@app.get("api/parser")
+def hello():
+    return 200
 
-
-@app.post("/api/parser")
-def apply_parser(r: ParsingModel):
+@app.post("api/parser")
+def apply_parser(r: ParserRequest):
     #docs = load_texts([r.text])
     #update_dataset_embeddings(docs, bert_model=args.bert_model)
     #doc = parser(docs[0])
+    requestBody = request.get_json()
+    r = requestBody['details']
     get_sentence_embeddings = get_sentence_embedder(args.bert_model)
     print(get_sentence_embeddings)
-    doc = add_parsers(tokenize(r.details))[0]
-    if len(doc.sentences) == 0:
-        return
-    for sent_i, sent in enumerate(doc.sentences):
-        sent_words = sent.tokens
-        embeddings = get_sentence_embeddings(sent_words)
-        doc.sentences[sent_i].embeddings = embeddings
-    doc = parser(doc)
-    print(doc.to_json())
-    return doc.to_json()
+    sentence = ["translate pcm to english: " + str(r.text)]
+    text_ = model.predict(sentence)
+    # machine_translated = en2pcm.translate(text)
+    machine_translated = text_[0]
+    print(f"machine translated {machine_translated}")
+    doc = add_parsers(tokenize(machine_translated))[0]
+    # if len(doc.sentences) == 0:
+    #     return
+    # for sent_i, sent in enumerate(doc.sentences):
+    #     sent_words = sent.tokens
+    #     embeddings = get_sentence_embeddings(sent_words)
+    #     doc.sentences[sent_i].embeddings = embeddings
+    # doc = parser(doc)
+    # print(doc.to_json())
+    return({"translatedDetails": doc})
+    # return doc.to_json()
+
+
+@app.get("/api/parser/config")
+def get_parser_config():
+    configs = []
+    for c in parser.components:
+        configs.append(c.get_config())
+    return configs
 
 
 if __name__ == '__main__':
-    uvicorn.run("app.run_bert:app", host=args.hostname, port=args.port, reload=args.reload, timeout_keep_alive=100 )
+    uvicorn.run("app.run_bert_discourse_classifier_for_pcm:app", host=args.hostname, port=args.port, reload=args.reload, timeout_keep_alive=100 )
+    # uvicorn.run(app, host=args.hostname, port=args.port, timeout_keep_alive=100 )
