@@ -2,6 +2,8 @@ from argparse import ArgumentParser
 import re
 import sys
 from flask import request
+import json
+import trankit
 
 import uvicorn
 from fastapi import FastAPI
@@ -47,6 +49,8 @@ arg_parser.add_argument("--bert-model", default='bert-base-cased', type=str, hel
 arg_parser.add_argument("--reload", action="store_true", help="Reload service on file changes")
 args = arg_parser.parse_args()
 
+model_path = "/home/CE/musaeed/bert_model/"
+
 app = FastAPI()
 
 origins = ["*"]
@@ -64,21 +68,51 @@ get_sentence_embeddings = None
 
 @app.on_event("startup")
 async def startup_event():
+    print("you are welcome here")
     global parser
+    global parserForLoadText
     parser = ParserPipeline.from_config(args.model_path)
     parser.load(args.model_path)
+    # parser = ParserPipeline.from_config(model_path)
+    # parser.load(model_path)
+    tmp_stdout = sys.stdout
+    sys.stdout = sys.stderr
+    parserForLoadText = trankit.Pipeline('english', cache_dir=os.path.expanduser('~/.trankit/'), gpu=False)
+    parserForLoadText.tokenize("Init")
+    sys.stdout = tmp_stdout
+    print("we have completed the load_paraser step", file=sys.stderr)
+    # parserForLoadText
 
 
 class ParserRequest(BaseModel):
-    text: str
+    details: str
+    title: str
 
+# def load_parser(use_gpu=False):
+#     import trankit
+#     tmp_stdout = sys.stdout
+#     sys.stdout = sys.stderr
+#     parser = trankit.Pipeline('english', cache_dir=os.path.expanduser('~/.trankit/'), gpu=use_gpu)
+#     parser.tokenize("Init")
+#     sys.stdout = tmp_stdout
+#     print("we have completed the load_paraser step", file=sys.stderr)
+#     return parser
 
-def tokenize(text, fast = True, tokenize_only = True):
-    from discopy_data.data.loaders.raw import load_texts, load_texts_fast
+# parserForLoadText = load_paraser()
+
+def tokenize(text, fast = True, tokenize_only = False):
+    # from discopy_data.data.loaders.raw import load_texts, load_texts_fast
+    from discopy_data.data.loaders.raw import load_textss as load_texts_fast
+    #just make a copy of load_texts and call it load_textss
+    from discopy_data.data.loaders.raw import load_texts
     output = []
-    document_loader = load_texts_fast if fast else load_texts
-    for doc in document_loader(re.split(r'\n\n\n+', text), tokenize_only=tokenize_only):
+    arr2text = ". ".join(text)
+    print(f"the input text to the tokenize is {text}",file = sys.stderr)
+    
+    document_loader = load_texts_fast # if fast else load_texts
+    for doc in document_loader(re.split(r'\n\n\n+', text), parserForLoadText, tokenize_only=tokenize_only):
         output.append(doc)
+    print(f'the tokenized text is {output[0].to_json()} ', file=sys.stderr)
     return output
 
 def add_parsers(src, 
@@ -94,6 +128,7 @@ def add_parsers(src,
     sys.stderr.write('SUPAR load dependency parser!\n')
     dparser = supar.Parser.load(dependency_parser) if dependencies else None
     output = []
+    print(f"the input to the add_parses is {src[0].to_json()}", file = sys.stderr)
     for doc in src:
         for sent_i, sent in enumerate(doc.sentences):
             inputs = [(t.surface, t.upos) for t in sent.tokens]
@@ -105,36 +140,88 @@ def add_parsers(src,
                 doc.sentences[sent_i].dependencies = dependencies
         output.append(doc)
     sys.stderr.write('Supar parsing done!\n')
+    print(f"the output to the add_parses is {output[0].to_json()}", file = sys.stderr)
     return output
 
-@app.get("api/parser")
+
+@app.get("/")
+def root():
+    return {"message": "Hello World"}
+
+@app.get("/api/parser")
 def hello():
     return 200
 
-@app.post("api/parser")
+@app.post("/api/parser")
 def apply_parser(r: ParserRequest):
-    #docs = load_texts([r.text])
-    #update_dataset_embeddings(docs, bert_model=args.bert_model)
-    #doc = parser(docs[0])
-    requestBody = request.get_json()
-    r = requestBody['details']
+    
     get_sentence_embeddings = get_sentence_embedder(args.bert_model)
-    print(get_sentence_embeddings)
-    sentence = ["translate pcm to english: " + str(r.text)]
-    text_ = model.predict(sentence)
+    # get_sentence_embeddings = get_sentence_embedder(model_path)
+    print(f"{get_sentence_embeddings}",file=sys.stderr)
+    # print(f"Input text {r.details}")
+    pcmTEXT = r.details
+    text_array = pcmTEXT.split(".")
+    text_array = list(filter(lambda x: x.strip(), text_array))
+
+    sentences = [ "translate pcm to english: " +r for r in text_array]
+    print(f"{sentences}", file=sys.stderr)
+    text_ = model.predict(sentences)
     # machine_translated = en2pcm.translate(text)
-    machine_translated = text_[0]
-    print(f"machine translated {machine_translated}")
-    doc = add_parsers(tokenize(machine_translated))[0]
-    # if len(doc.sentences) == 0:
-    #     return
-    # for sent_i, sent in enumerate(doc.sentences):
-    #     sent_words = sent.tokens
-    #     embeddings = get_sentence_embeddings(sent_words)
-    #     doc.sentences[sent_i].embeddings = embeddings
-    # doc = parser(doc)
-    # print(doc.to_json())
-    return({"translatedDetails": doc})
+    machine_translated = text_
+    translation = ". ".join(machine_translated) + "."
+    print(f"input text is {pcmTEXT}", file=sys.stderr)
+    print(f"machine translated {translation}", file=sys.stderr)
+    doc = add_parsers(tokenize(str(translation)))[0]
+    if len(doc.sentences) == 0:
+        return({"translatedDetails": str("You are passing empty string ;)")})
+
+    for sent_i, sent in enumerate(doc.sentences):
+        sent_words = sent.tokens
+        embeddings = get_sentence_embeddings(sent_words)
+        doc.sentences[sent_i].embeddings = embeddings
+    doc = parser(doc)
+    print(doc.to_json())
+    # doc = json.dumps(doc)
+    doc_json = doc.to_json()
+    # return({"translatedDetails": doc})
+    return({"translatedDetails": str(doc_json)})
+    # return doc.to_json()
+
+
+@app.post("/api/parseren")
+def apply_parser(r: ParserRequest):
+    # docs = load_texts([r.details])
+    # update_dataset_embeddings(docs, bert_model=args.bert_model)
+    # update_dataset_embeddings(docs, bert_model=model_path)
+    # doc = parser(docs[0])
+    # return 200;
+    # r = requestBody['details']
+    get_sentence_embeddings = get_sentence_embedder(args.bert_model)
+    # get_sentence_embeddings = get_sentence_embedder(model_path)
+    print(f"get_sentence_embeddings", file = sys.stderr)
+    # sentence = ["translate pcm to english: " + str(r.details)]
+    # text_ = model.predict(sentence)
+    # machine_translated = en2pcm.translate(text)
+    # machine_translated = text_[0]
+    print(f"WE are using the english parser and we are here", file=sys.stderr)
+    enTEXT = r.details
+    text_array = enTEXT.split(".")
+    text_array = list(filter(lambda x: x.strip(), text_array))
+    translation = ". ".join(text_array) + "."
+    print(f"The english text to be processes is {translation}")
+    doc = add_parsers(tokenize(str(translation)))[0]
+    if len(doc.sentences) == 0:
+        return({"translatedDetails": str("You are passing empty string ;)")})
+    for sent_i, sent in enumerate(doc.sentences):
+        sent_words = sent.tokens
+        embeddings = get_sentence_embeddings(sent_words)
+        doc.sentences[sent_i].embeddings = embeddings
+    doc = parser(doc)
+    print(doc.to_json(), file=sys.stderr)
+    # doc = json.dumps(doc)
+    doc_json = doc.to_json()
+    # return({"translatedDetails": doc})
+    return({"translatedDetails": str(doc_json)})
     # return doc.to_json()
 
 
@@ -147,5 +234,8 @@ def get_parser_config():
 
 
 if __name__ == '__main__':
-    uvicorn.run("app.run_bert_discourse_classifier_for_pcm:app", host=args.hostname, port=args.port, reload=args.reload, timeout_keep_alive=100 )
+    uvicorn.run("run_bert_discoures_classifier:app", host=args.hostname, port=args.port, reload=args.reload, timeout_keep_alive=100 )
+    # uvicorn.run("run_bert_discoures_classifier:app",  reload=args.reload, timeout_keep_alive=100 )
+
+    # uvicorn.run("app", host=args.hostname, port=args.port, reload=args.reload, timeout_keep_alive=100 )
     # uvicorn.run(app, host=args.hostname, port=args.port, timeout_keep_alive=100 )
