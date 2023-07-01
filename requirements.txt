@@ -8,4 +8,5 @@ transformers==4.8.1
 fastapi==0.67.0
 scikit-learn
 supar
-git+git://github.com:rknaebel/discopy-data
+#git+git://github.com:rknaebel/discopy-data
+#I found the above line commented in my machine
